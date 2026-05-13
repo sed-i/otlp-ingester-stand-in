@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -13,6 +17,64 @@ import (
 	collectormetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
+
+const maxFilterLimit = 1000
+
+func parseTimeRange(q url.Values) (*time.Time, *time.Time, int, int, error) {
+	var from, to *time.Time
+	if s := q.Get("from"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return nil, nil, 0, 0, fmt.Errorf("invalid 'from' timestamp: %w", err)
+		}
+		from = &t
+	}
+	if s := q.Get("to"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return nil, nil, 0, 0, fmt.Errorf("invalid 'to' timestamp: %w", err)
+		}
+		to = &t
+	}
+	limit := 0
+	if s := q.Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			return nil, nil, 0, 0, fmt.Errorf("invalid 'limit': %s", s)
+		}
+		if n > maxFilterLimit {
+			n = maxFilterLimit
+		}
+		limit = n
+	}
+	offset := 0
+	if s := q.Get("offset"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			return nil, nil, 0, 0, fmt.Errorf("invalid 'offset': %s", s)
+		}
+		offset = n
+	}
+	return from, to, limit, offset, nil
+}
+
+func parseAttrFilters(q url.Values) (exact, wildcard map[string]string) {
+	exact = make(map[string]string)
+	wildcard = make(map[string]string)
+	for k, vs := range q {
+		if !strings.HasPrefix(k, "attr[") || !strings.HasSuffix(k, "]") {
+			continue
+		}
+		attrKey := strings.ToLower(k[5 : len(k)-1])
+		attrVal := vs[0]
+		if strings.HasSuffix(attrVal, "*") {
+			wildcard[attrKey] = attrVal[:len(attrVal)-1]
+		} else {
+			exact[attrKey] = attrVal
+		}
+	}
+	return
+}
 
 func handleLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -49,7 +111,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 			}
 
 			for _, lr := range sl.GetLogRecords() {
-				body := stringValue(lr.GetBody())
+				logBody := stringValue(lr.GetBody())
 				severity := lr.GetSeverityText()
 				if severity == "" {
 					severity = fmt.Sprintf("SEVERITY_%d", lr.GetSeverityNumber())
@@ -60,7 +122,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 					Service:    service,
 					Scope:      scope,
 					Severity:   severity,
-					Body:       body,
+					Body:       logBody,
 					TraceID:    bytesToHex(lr.GetTraceId()),
 					SpanID:     bytesToHex(lr.GetSpanId()),
 					Attributes: attrsToMap(lr.GetAttributes()),
@@ -78,7 +140,43 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func handleAPILogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(logStore.GetAll())
+
+	q := r.URL.Query()
+	if len(q) == 0 {
+		json.NewEncoder(w).Encode(logStore.GetAll())
+		return
+	}
+
+	from, to, limit, offset, err := parseTimeRange(q)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	exact, wildcard := parseAttrFilters(q)
+
+	f := LogFilter{
+		Body:         q.Get("body"),
+		BodyContains: q.Get("body_contains"),
+		Severity:     q.Get("severity"),
+		Service:      q.Get("service"),
+		Attrs:        exact,
+		AttrWildcard: wildcard,
+		From:         from,
+		To:           to,
+		Limit:        limit,
+		Offset:       offset,
+	}
+
+	if s := q.Get("body_regex"); s != "" {
+		re, err := regexp.Compile(s)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid 'body_regex': %v", err), http.StatusBadRequest)
+			return
+		}
+		f.BodyRegex = re
+	}
+
+	json.NewEncoder(w).Encode(logStore.Filter(f))
 }
 
 func handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +285,34 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 func handleAPIMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metricStore.GetAll())
+
+	q := r.URL.Query()
+	if len(q) == 0 {
+		json.NewEncoder(w).Encode(metricStore.GetAll())
+		return
+	}
+
+	from, to, limit, offset, err := parseTimeRange(q)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	exact, wildcard := parseAttrFilters(q)
+
+	f := MetricFilter{
+		Name:         q.Get("name"),
+		NameContains: q.Get("name_contains"),
+		Type:         q.Get("type"),
+		Service:      q.Get("service"),
+		Attrs:        exact,
+		AttrWildcard: wildcard,
+		From:         from,
+		To:           to,
+		Limit:        limit,
+		Offset:       offset,
+	}
+
+	json.NewEncoder(w).Encode(metricStore.Filter(f))
 }
 
 func handleTraces(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +379,35 @@ func handleTraces(w http.ResponseWriter, r *http.Request) {
 
 func handleAPITraces(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(spanStore.GetAll())
+
+	q := r.URL.Query()
+	if len(q) == 0 {
+		json.NewEncoder(w).Encode(spanStore.GetAll())
+		return
+	}
+
+	from, to, limit, offset, err := parseTimeRange(q)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	exact, wildcard := parseAttrFilters(q)
+
+	f := SpanFilter{
+		Name:         q.Get("name"),
+		Kind:         q.Get("kind"),
+		Service:      q.Get("service"),
+		TraceID:      q.Get("trace_id"),
+		SpanID:       q.Get("span_id"),
+		Attrs:        exact,
+		AttrWildcard: wildcard,
+		From:         from,
+		To:           to,
+		Limit:        limit,
+		Offset:       offset,
+	}
+
+	json.NewEncoder(w).Encode(spanStore.Filter(f))
 }
 
 func handleUI(w http.ResponseWriter, r *http.Request) {

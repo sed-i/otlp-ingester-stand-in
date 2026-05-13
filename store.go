@@ -1,6 +1,11 @@
 package main
 
-import "sync"
+import (
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
 
 type FlatLogRecord struct {
 	Timestamp  string            `json:"timestamp"`
@@ -98,3 +103,209 @@ func (s *SpanStore) GetAll() []FlatSpanRecord {
 var logStore = &LogStore{}
 var metricStore = &MetricStore{}
 var spanStore = &SpanStore{}
+
+type LogFilter struct {
+	Body         string
+	BodyContains string
+	BodyRegex    *regexp.Regexp
+	Severity     string
+	Service      string
+	Attrs        map[string]string
+	AttrWildcard map[string]string
+	From         *time.Time
+	To           *time.Time
+	Limit        int
+	Offset       int
+}
+
+type MetricFilter struct {
+	Name         string
+	NameContains string
+	Type         string
+	Service      string
+	Attrs        map[string]string
+	AttrWildcard map[string]string
+	From         *time.Time
+	To           *time.Time
+	Limit        int
+	Offset       int
+}
+
+type SpanFilter struct {
+	Name         string
+	Kind         string
+	Service      string
+	TraceID      string
+	SpanID       string
+	Attrs        map[string]string
+	AttrWildcard map[string]string
+	From         *time.Time
+	To           *time.Time
+	Limit        int
+	Offset       int
+}
+
+func filterTime(ts string, from, to *time.Time) bool {
+	if from == nil && to == nil {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return false
+	}
+	if from != nil && t.Before(*from) {
+		return false
+	}
+	if to != nil && t.After(*to) {
+		return false
+	}
+	return true
+}
+
+func matchAttrs(attrs map[string]string, exact, wildcard map[string]string) bool {
+	for k, v := range exact {
+		rv, ok := attrs[k]
+		if !ok || rv != v {
+			return false
+		}
+	}
+	for k, prefix := range wildcard {
+		rv, ok := attrs[k]
+		if !ok || !strings.HasPrefix(rv, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *LogStore) Filter(f LogFilter) []FlatLogRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []FlatLogRecord
+	skipped := 0
+	for _, r := range s.records {
+		if f.Service != "" && r.Service != f.Service {
+			continue
+		}
+		if f.Severity != "" && r.Severity != f.Severity {
+			continue
+		}
+		if f.Body != "" && r.Body != f.Body {
+			continue
+		}
+		if f.BodyContains != "" && !strings.Contains(r.Body, f.BodyContains) {
+			continue
+		}
+		if f.BodyRegex != nil && !f.BodyRegex.MatchString(r.Body) {
+			continue
+		}
+		if !filterTime(r.Timestamp, f.From, f.To) {
+			continue
+		}
+		if !matchAttrs(r.Attributes, f.Attrs, f.AttrWildcard) {
+			continue
+		}
+		if f.Offset > 0 {
+			if skipped < f.Offset {
+				skipped++
+				continue
+			}
+		}
+		out = append(out, r)
+		if f.Limit > 0 && len(out) >= f.Limit {
+			break
+		}
+	}
+	if out == nil {
+		out = []FlatLogRecord{}
+	}
+	return out
+}
+
+func (s *MetricStore) Filter(f MetricFilter) []FlatMetricRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []FlatMetricRecord
+	skipped := 0
+	for _, r := range s.records {
+		if f.Service != "" && r.Service != f.Service {
+			continue
+		}
+		if f.Name != "" && r.Name != f.Name {
+			continue
+		}
+		if f.NameContains != "" && !strings.Contains(r.Name, f.NameContains) {
+			continue
+		}
+		if f.Type != "" && r.Type != f.Type {
+			continue
+		}
+		if !filterTime(r.Timestamp, f.From, f.To) {
+			continue
+		}
+		if !matchAttrs(r.Attributes, f.Attrs, f.AttrWildcard) {
+			continue
+		}
+		if f.Offset > 0 {
+			if skipped < f.Offset {
+				skipped++
+				continue
+			}
+		}
+		out = append(out, r)
+		if f.Limit > 0 && len(out) >= f.Limit {
+			break
+		}
+	}
+	if out == nil {
+		out = []FlatMetricRecord{}
+	}
+	return out
+}
+
+func (s *SpanStore) Filter(f SpanFilter) []FlatSpanRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []FlatSpanRecord
+	skipped := 0
+	for _, r := range s.records {
+		if f.Service != "" && r.Service != f.Service {
+			continue
+		}
+		if f.Name != "" && r.Name != f.Name {
+			continue
+		}
+		if f.Kind != "" && r.Kind != f.Kind {
+			continue
+		}
+		if f.TraceID != "" && !strings.EqualFold(r.TraceID, f.TraceID) {
+			continue
+		}
+		if f.SpanID != "" && !strings.EqualFold(r.SpanID, f.SpanID) {
+			continue
+		}
+		if !filterTime(r.Timestamp, f.From, f.To) {
+			continue
+		}
+		if !matchAttrs(r.Attributes, f.Attrs, f.AttrWildcard) {
+			continue
+		}
+		if f.Offset > 0 {
+			if skipped < f.Offset {
+				skipped++
+				continue
+			}
+		}
+		out = append(out, r)
+		if f.Limit > 0 && len(out) >= f.Limit {
+			break
+		}
+	}
+	if out == nil {
+		out = []FlatSpanRecord{}
+	}
+	return out
+}
