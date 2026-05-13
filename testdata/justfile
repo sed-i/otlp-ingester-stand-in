@@ -5,9 +5,13 @@ get-logs:
 
 metrics:
     curl -X POST -H "Content-Type: application/json" -d @metrics.json -i localhost:8080/v1/metrics
+get-metrics:
+    curl -s localhost:8080/api/v1/metrics | jq
 
 traces:
     curl -X POST -H "Content-Type: application/json" -d @trace.json -i localhost:8080/v1/traces
+get-traces:
+    curl -s localhost:8080/api/v1/traces | jq
 
 events:
     curl -X POST -H "Content-Type: application/json" -d @events.json -i localhost:8080/v1/logs

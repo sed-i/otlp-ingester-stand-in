@@ -15,7 +15,11 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	collectormetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
+	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
 type FlatLogRecord struct {
@@ -27,6 +31,31 @@ type FlatLogRecord struct {
 	TraceID    string            `json:"trace_id"`
 	SpanID     string            `json:"span_id"`
 	Attributes map[string]string `json:"attributes"`
+}
+
+type FlatMetricRecord struct {
+	Timestamp   string            `json:"timestamp"`
+	Service     string            `json:"service"`
+	Scope       string            `json:"scope"`
+	Name        string            `json:"name"`
+	Unit        string            `json:"unit"`
+	Description string            `json:"description"`
+	Type        string            `json:"type"`
+	Value       string            `json:"value"`
+	Attributes  map[string]string `json:"attributes"`
+}
+
+type FlatSpanRecord struct {
+	Timestamp    string            `json:"timestamp"`
+	Service      string            `json:"service"`
+	Scope        string            `json:"scope"`
+	Name         string            `json:"name"`
+	Kind         string            `json:"kind"`
+	TraceID      string            `json:"trace_id"`
+	SpanID       string            `json:"span_id"`
+	ParentSpanID string            `json:"parent_span_id"`
+	Duration     string            `json:"duration"`
+	Attributes   map[string]string `json:"attributes"`
 }
 
 type LogStore struct {
@@ -48,7 +77,47 @@ func (s *LogStore) GetAll() []FlatLogRecord {
 	return out
 }
 
-var store = &LogStore{}
+type MetricStore struct {
+	mu      sync.RWMutex
+	records []FlatMetricRecord
+}
+
+func (s *MetricStore) Append(r FlatMetricRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = append(s.records, r)
+}
+
+func (s *MetricStore) GetAll() []FlatMetricRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]FlatMetricRecord, len(s.records))
+	copy(out, s.records)
+	return out
+}
+
+type SpanStore struct {
+	mu      sync.RWMutex
+	records []FlatSpanRecord
+}
+
+func (s *SpanStore) Append(r FlatSpanRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = append(s.records, r)
+}
+
+func (s *SpanStore) GetAll() []FlatSpanRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]FlatSpanRecord, len(s.records))
+	copy(out, s.records)
+	return out
+}
+
+var logStore = &LogStore{}
+var metricStore = &MetricStore{}
+var spanStore = &SpanStore{}
 
 func parseNanos(ns uint64) time.Time {
 	if ns == 0 {
@@ -129,6 +198,64 @@ func bytesToHex(b []byte) string {
 	return hex.EncodeToString(b)
 }
 
+func spanKindString(k tracev1.Span_SpanKind) string {
+	switch k {
+	case tracev1.Span_SPAN_KIND_SERVER:
+		return "server"
+	case tracev1.Span_SPAN_KIND_CLIENT:
+		return "client"
+	case tracev1.Span_SPAN_KIND_PRODUCER:
+		return "producer"
+	case tracev1.Span_SPAN_KIND_CONSUMER:
+		return "consumer"
+	case tracev1.Span_SPAN_KIND_INTERNAL:
+		return "internal"
+	default:
+		return "unspecified"
+	}
+}
+
+func metricValueString(dp *metricsv1.NumberDataPoint) string {
+	switch {
+	case dp.GetAsDouble() != 0:
+		return strconv.FormatFloat(dp.GetAsDouble(), 'f', -1, 64)
+	default:
+		return strconv.FormatInt(dp.GetAsInt(), 10)
+	}
+}
+
+func histogramSummary(dp *metricsv1.HistogramDataPoint) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("count=%d", dp.GetCount()))
+	parts = append(parts, fmt.Sprintf("sum=%.3f", dp.GetSum()))
+	parts = append(parts, fmt.Sprintf("min=%.3f", dp.GetMin()))
+	parts = append(parts, fmt.Sprintf("max=%.3f", dp.GetMax()))
+	buckets := make([]string, len(dp.GetBucketCounts()))
+	for i, c := range dp.GetBucketCounts() {
+		buckets[i] = strconv.FormatUint(c, 10)
+	}
+	parts = append(parts, fmt.Sprintf("buckets=[%s]", strings.Join(buckets, ",")))
+	return strings.Join(parts, " ")
+}
+
+func expHistogramSummary(dp *metricsv1.ExponentialHistogramDataPoint) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("count=%d", dp.GetCount()))
+	parts = append(parts, fmt.Sprintf("sum=%.3f", dp.GetSum()))
+	parts = append(parts, fmt.Sprintf("scale=%d", dp.GetScale()))
+	parts = append(parts, fmt.Sprintf("zeroCount=%d", dp.GetZeroCount()))
+	parts = append(parts, fmt.Sprintf("min=%.3f", dp.GetMin()))
+	parts = append(parts, fmt.Sprintf("max=%.3f", dp.GetMax()))
+	if pos := dp.GetPositive(); pos != nil {
+		buckets := make([]string, len(pos.GetBucketCounts()))
+		for i, c := range pos.GetBucketCounts() {
+			buckets[i] = strconv.FormatUint(c, 10)
+		}
+		parts = append(parts, fmt.Sprintf("positive=[offset=%d,buckets=%s]", pos.GetOffset(), strings.Join(buckets, ",")))
+	}
+	return strings.Join(parts, " ")
+}
+
 func handleLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -180,7 +307,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 					SpanID:     bytesToHex(lr.GetSpanId()),
 					Attributes: attrsToMap(lr.GetAttributes()),
 				}
-				store.Append(rec)
+				logStore.Append(rec)
 				count++
 			}
 		}
@@ -193,7 +320,183 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func handleAPILogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(store.GetAll())
+	json.NewEncoder(w).Encode(logStore.GetAll())
+}
+
+func handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+
+	req := &collectormetrics.ExportMetricsServiceRequest{}
+	if err := protojson.Unmarshal(body, req); err != nil {
+		http.Error(w, fmt.Sprintf("failed to parse OTLP JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	count := 0
+	for _, rm := range req.GetResourceMetrics() {
+		service := ""
+		if rm.GetResource() != nil {
+			service = extractServiceName(rm.GetResource().GetAttributes())
+		}
+		if service == "" {
+			service = "-"
+		}
+
+		for _, sm := range rm.GetScopeMetrics() {
+			scope := "-"
+			if sm.GetScope() != nil {
+				scope = sm.GetScope().GetName()
+			}
+
+			for _, m := range sm.GetMetrics() {
+				for _, dp := range m.GetSum().GetDataPoints() {
+					rec := FlatMetricRecord{
+						Timestamp:   parseNanos(dp.GetTimeUnixNano()).UTC().Format(time.RFC3339Nano),
+						Service:     service,
+						Scope:       scope,
+						Name:        m.GetName(),
+						Unit:        m.GetUnit(),
+						Description: m.GetDescription(),
+						Type:        "sum",
+						Value:       metricValueString(dp),
+						Attributes:  attrsToMap(dp.GetAttributes()),
+					}
+					metricStore.Append(rec)
+					count++
+				}
+				for _, dp := range m.GetGauge().GetDataPoints() {
+					rec := FlatMetricRecord{
+						Timestamp:   parseNanos(dp.GetTimeUnixNano()).UTC().Format(time.RFC3339Nano),
+						Service:     service,
+						Scope:       scope,
+						Name:        m.GetName(),
+						Unit:        m.GetUnit(),
+						Description: m.GetDescription(),
+						Type:        "gauge",
+						Value:       metricValueString(dp),
+						Attributes:  attrsToMap(dp.GetAttributes()),
+					}
+					metricStore.Append(rec)
+					count++
+				}
+				for _, dp := range m.GetHistogram().GetDataPoints() {
+					rec := FlatMetricRecord{
+						Timestamp:   parseNanos(dp.GetTimeUnixNano()).UTC().Format(time.RFC3339Nano),
+						Service:     service,
+						Scope:       scope,
+						Name:        m.GetName(),
+						Unit:        m.GetUnit(),
+						Description: m.GetDescription(),
+						Type:        "histogram",
+						Value:       histogramSummary(dp),
+						Attributes:  attrsToMap(dp.GetAttributes()),
+					}
+					metricStore.Append(rec)
+					count++
+				}
+				for _, dp := range m.GetExponentialHistogram().GetDataPoints() {
+					rec := FlatMetricRecord{
+						Timestamp:   parseNanos(dp.GetTimeUnixNano()).UTC().Format(time.RFC3339Nano),
+						Service:     service,
+						Scope:       scope,
+						Name:        m.GetName(),
+						Unit:        m.GetUnit(),
+						Description: m.GetDescription(),
+						Type:        "exponential_histogram",
+						Value:       expHistogramSummary(dp),
+						Attributes:  attrsToMap(dp.GetAttributes()),
+					}
+					metricStore.Append(rec)
+					count++
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"received":%d}`, count)
+}
+
+func handleAPIMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metricStore.GetAll())
+}
+
+func handleTraces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+
+	req := &collectortrace.ExportTraceServiceRequest{}
+	if err := protojson.Unmarshal(body, req); err != nil {
+		http.Error(w, fmt.Sprintf("failed to parse OTLP JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	count := 0
+	for _, rs := range req.GetResourceSpans() {
+		service := ""
+		if rs.GetResource() != nil {
+			service = extractServiceName(rs.GetResource().GetAttributes())
+		}
+		if service == "" {
+			service = "-"
+		}
+
+		for _, ss := range rs.GetScopeSpans() {
+			scope := "-"
+			if ss.GetScope() != nil {
+				scope = ss.GetScope().GetName()
+			}
+
+			for _, sp := range ss.GetSpans() {
+				startNanos := sp.GetStartTimeUnixNano()
+				endNanos := sp.GetEndTimeUnixNano()
+				duration := time.Duration(endNanos-startNanos) * time.Nanosecond
+
+				rec := FlatSpanRecord{
+					Timestamp:    parseNanos(startNanos).UTC().Format(time.RFC3339Nano),
+					Service:      service,
+					Scope:        scope,
+					Name:         sp.GetName(),
+					Kind:         spanKindString(sp.GetKind()),
+					TraceID:      bytesToHex(sp.GetTraceId()),
+					SpanID:       bytesToHex(sp.GetSpanId()),
+					ParentSpanID: bytesToHex(sp.GetParentSpanId()),
+					Duration:     duration.String(),
+					Attributes:   attrsToMap(sp.GetAttributes()),
+				}
+				spanStore.Append(rec)
+				count++
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"received":%d}`, count)
+}
+
+func handleAPITraces(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(spanStore.GetAll())
 }
 
 func handleUI(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +507,11 @@ func handleUI(w http.ResponseWriter, r *http.Request) {
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/logs", handleLogs)
+	mux.HandleFunc("/v1/metrics", handleMetrics)
+	mux.HandleFunc("/v1/traces", handleTraces)
 	mux.HandleFunc("/api/v1/logs", handleAPILogs)
+	mux.HandleFunc("/api/v1/metrics", handleAPIMetrics)
+	mux.HandleFunc("/api/v1/traces", handleAPITraces)
 	mux.HandleFunc("/api/logs", handleAPILogs)
 	mux.HandleFunc("/ui", handleUI)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
