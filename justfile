@@ -27,3 +27,6 @@ get: get-logs get-metrics get-traces
 match:
     curl 'localhost:8080/api/v1/logs?body=Example+log+record'
     curl -s --data-urlencode 'attr[int.attribute]=10' localhost:8080/api/v1/logs
+
+integrate-test:
+	@go test -v -count=1 ./... -ginkgo.v

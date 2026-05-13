@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-func main() {
+func newRouter() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/logs", handleLogs)
 	mux.HandleFunc("/v1/metrics", handleMetrics)
@@ -22,7 +22,10 @@ func main() {
 		}
 		http.Redirect(w, r, "/ui", http.StatusFound)
 	})
+	return mux
+}
 
+func main() {
 	log.Println("listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Fatal(http.ListenAndServe(":8080", newRouter()))
 }

@@ -15,9 +15,15 @@ Server starts on `http://localhost:8080`.
 ### Send telemetry
 
 ```bash
-curl -X POST -H "Content-Type: application/json" -d @logs.json -i localhost:8080/v1/logs
-curl -X POST -H "Content-Type: application/json" -d @metrics.json -i localhost:8080/v1/metrics
-curl -X POST -H "Content-Type: application/json" -d @trace.json -i localhost:8080/v1/traces
+curl -X POST -H "Content-Type: application/json" -d @testdata/logs.json -i localhost:8080/v1/logs
+curl -X POST -H "Content-Type: application/json" -d @testdata/metrics.json -i localhost:8080/v1/metrics
+curl -X POST -H "Content-Type: application/json" -d @testdata/trace.json -i localhost:8080/v1/traces
+```
+
+or simply
+
+```bash
+just push
 ```
 
 ### View telemetry
@@ -30,42 +36,42 @@ All query endpoints accept filtering via query parameters and return JSON arrays
 
 **GET `/api/v1/logs`** — supported parameters:
 
-| Parameter | Description |
-| --------- | ----------- |
-| `body` | Exact body match |
-| `body_contains` | Body substring match |
-| `body_regex` | Body regex match (e.g. `^Example.*`) |
-| `severity` | Exact severity match (e.g. `Information`, `ERROR`) |
-| `service` | Exact service name match |
-| `attr[name]` | Attribute exact match (e.g. `attr[int.attribute]=10`) |
-| `attr[name]` | Attribute wildcard prefix when value ends with `*` (e.g. `attr[string.attribute]=some*`) |
-| `from` | Start of time range (RFC3339, e.g. `2018-12-01T00:00:00Z`) |
-| `to` | End of time range (RFC3339) |
-| `limit` | Max results (default unlimited, capped at 1000) |
-| `offset` | Skip first N results |
+| Parameter       | Description                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `body`          | Exact body match                                                                         |
+| `body_contains` | Body substring match                                                                     |
+| `body_regex`    | Body regex match (e.g. `^Example.*`)                                                     |
+| `severity`      | Exact severity match (e.g. `Information`, `ERROR`)                                       |
+| `service`       | Exact service name match                                                                 |
+| `attr[name]`    | Attribute exact match (e.g. `attr[int.attribute]=10`)                                    |
+| `attr[name]`    | Attribute wildcard prefix when value ends with `*` (e.g. `attr[string.attribute]=some*`) |
+| `from`          | Start of time range (RFC3339, e.g. `2018-12-01T00:00:00Z`)                               |
+| `to`            | End of time range (RFC3339)                                                              |
+| `limit`         | Max results (default unlimited, capped at 1000)                                          |
+| `offset`        | Skip first N results                                                                     |
 
 **GET `/api/v1/metrics`** — supported parameters:
 
-| Parameter | Description |
-| --------- | ----------- |
-| `name` | Exact metric name match |
-| `name_contains` | Metric name substring match |
-| `type` | Metric type (`sum`, `gauge`, `histogram`, `exponential_histogram`) |
-| `service` | Exact service name match |
-| `attr[name]` | Attribute exact or wildcard match |
-| `from`, `to`, `limit`, `offset` | Same as logs |
+| Parameter                       | Description                                                        |
+| ------------------------------- | ------------------------------------------------------------------ |
+| `name`                          | Exact metric name match                                            |
+| `name_contains`                 | Metric name substring match                                        |
+| `type`                          | Metric type (`sum`, `gauge`, `histogram`, `exponential_histogram`) |
+| `service`                       | Exact service name match                                           |
+| `attr[name]`                    | Attribute exact or wildcard match                                  |
+| `from`, `to`, `limit`, `offset` | Same as logs                                                       |
 
 **GET `/api/v1/traces`** — supported parameters:
 
-| Parameter | Description |
-| --------- | ----------- |
-| `name` | Exact span name match |
-| `kind` | Span kind (`server`, `client`, `producer`, `consumer`, `internal`) |
-| `service` | Exact service name match |
-| `trace_id` | Trace ID (case-insensitive hex) |
-| `span_id` | Span ID (case-insensitive hex) |
-| `attr[name]` | Attribute exact or wildcard match |
-| `from`, `to`, `limit`, `offset` | Same as logs |
+| Parameter                       | Description                                                        |
+| ------------------------------- | ------------------------------------------------------------------ |
+| `name`                          | Exact span name match                                              |
+| `kind`                          | Span kind (`server`, `client`, `producer`, `consumer`, `internal`) |
+| `service`                       | Exact service name match                                           |
+| `trace_id`                      | Trace ID (case-insensitive hex)                                    |
+| `span_id`                       | Span ID (case-insensitive hex)                                     |
+| `attr[name]`                    | Attribute exact or wildcard match                                  |
+| `from`, `to`, `limit`, `offset` | Same as logs                                                       |
 
 #### Examples
 
@@ -81,63 +87,22 @@ curl 'localhost:8080/api/v1/metrics?name=request.count&type=sum'
 curl 'localhost:8080/api/v1/traces?service=my.service&kind=server'
 ```
 
-## Example `logs.json`
+## Examples
 
-```json
-{
-  "resourceLogs": [
-    {
-      "resource": {
-        "attributes": [
-          {
-            "key": "service.name",
-            "value": { "stringValue": "my.service" }
-          }
-        ]
-      },
-      "scopeLogs": [
-        {
-          "scope": {
-            "name": "my.library",
-            "version": "1.0.0"
-          },
-          "logRecords": [
-            {
-              "timeUnixNano": "1544712660300000000",
-              "observedTimeUnixNano": "1544712660300000000",
-              "severityNumber": 10,
-              "severityText": "Information",
-              "traceId": "5B8EFFF798038103D269B633813FC60C",
-              "spanId": "EEE19B7EC3C1B174",
-              "body": { "stringValue": "Example log record" },
-              "attributes": [
-                { "key": "string.attribute", "value": { "stringValue": "some string" } },
-                { "key": "boolean.attribute", "value": { "boolValue": true } },
-                { "key": "int.attribute", "value": { "intValue": "10" } }
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-More examples: [opentelemetry-proto/examples](https://github.com/open-telemetry/opentelemetry-proto/tree/main/examples)
+All [testdata](testdata/) was taken from [opentelemetry-proto/examples](https://github.com/open-telemetry/opentelemetry-proto/tree/main/examples)
 
 ## Endpoints
 
-| Method | Path              | Description                                      |
-| ------ | ----------------- | ------------------------------------------------ |
-| POST   | `/v1/logs`        | Ingest OTLP JSON log payload                     |
-| POST   | `/v1/metrics`     | Ingest OTLP JSON metrics payload                 |
-| POST   | `/v1/traces`      | Ingest OTLP JSON trace payload                   |
-| GET    | `/api/v1/logs`    | Query stored logs with filters                   |
-| GET    | `/api/v1/metrics` | Query stored metrics with filters                |
-| GET    | `/api/v1/traces`  | Query stored spans with filters                  |
-| GET    | `/api/logs`       | Legacy alias for `/api/v1/logs`                  |
-| GET    | `/ui`             | Web UI displaying telemetry (auto-refreshing)    |
+| Method | Path              | Description                                   |
+| ------ | ----------------- | --------------------------------------------- |
+| POST   | `/v1/logs`        | Ingest OTLP JSON log payload                  |
+| POST   | `/v1/metrics`     | Ingest OTLP JSON metrics payload              |
+| POST   | `/v1/traces`      | Ingest OTLP JSON trace payload                |
+| GET    | `/api/v1/logs`    | Query stored logs with filters                |
+| GET    | `/api/v1/metrics` | Query stored metrics with filters             |
+| GET    | `/api/v1/traces`  | Query stored spans with filters               |
+| GET    | `/api/logs`       | Legacy alias for `/api/v1/logs`               |
+| GET    | `/ui`             | Web UI displaying telemetry (auto-refreshing) |
 
 ## Dependencies
 
