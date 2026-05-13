@@ -1,6 +1,6 @@
-# ADR 0001: Minimal OTLP Log Ingester with Web UI
+# ADR 0001: Minimal OTLP Telemetry Viewer
 
-**Status:** Accepted
+**Status:** Superseded by ADR 0003
 
 **Date:** 2026-05-13
 
